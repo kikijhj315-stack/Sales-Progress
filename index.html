@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>통합 매출 및 재고 관리 대시보드</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 900: '#1e3a8a' },
+              danger: { 50: '#fef2f2', 500: '#ef4444', 600: '#dc2626' },
+              warning: { 50: '#fffbeb', 500: '#f59e0b', 600: '#d97706' }
+            }
+          }
+        }
+      }
+    </script>
+    <!-- React, ReactDOM, Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- XLSX -->
+    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', -apple-system, sans-serif; background-color: #f8fafc; color: #0f172a; }
+        .glass { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(226, 232, 240, 0.8); }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        .loader {
+          border: 3px solid #f3f3f3; border-top: 3px solid #3b82f6; border-radius: 50%;
+          width: 24px; height: 24px; animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="min-h-screen text-slate-800 antialiased selection:bg-brand-100 selection:text-brand-900">
+    <div id="error-log" style="color: red; padding: 20px; font-weight: bold; white-space: pre-wrap;"></div>
+    <script>
+      window.onerror = function(message, source, lineno, colno, error) {
+        document.getElementById('error-log').innerText += message + "\n";
+      };
+    </script>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+        // SVG Icons
+        const Icons = {
+            Upload: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>,
+            Download: () => <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>,
+            AlertTriangle: () => <svg className="w-5 h-5 text-warning-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>,
+            AlertCircle: () => <svg className="w-5 h-5 text-danger-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>,
+            Calendar: () => <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>,
+            TrendingUp: () => <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>
+        };
+
+        const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
+
+        const isDomestic = (color) => color && color.toUpperCase().startsWith('ZZ');
+
+        const parseNumber = (val) => {
+            if (typeof val === 'number') return val;
+            if (!val) return 0;
+            const cleaned = String(val).replace(/,/g, '').trim();
+            return Number(cleaned) || 0;
+        };
+
+        // parsers
+        const parseSales = (data) => {
+            const result = [];
+            for (let i = 1; i < data.length; i++) {
+                const row = data[i];
+                if (!row || row.length === 0 || !row[0]) continue;
+                const dateRaw = String(row[0]).trim(); 
+                const dateStr = dateRaw.replace(/\./g, '-').split(' ')[0];
+                
+                const fullModel = String(row[3] || "");
+                const parts = fullModel.split('-');
+                const model = parts[1] || fullModel;
+                
+                result.push({ 
+                    date: dateStr, 
+                    brand: parts[0] || "", 
+                    model: model.trim(), 
+                    color: parts[2] || "", 
+                    size: String(row[4] || ""), 
+                    qty: parseNumber(row[5]),
+                    price: parseNumber(row[6])
+                });
+            }
+            return result;
+        };
+
+        const parseInventory = (data) => {
+            const result = [];
+            for (let i = 1; i < data.length; i++) {
+                const row = data[i];
+                if (!row || !row[0]) continue;
+                const fullModel = String(row[0] || "");
+                const parts = fullModel.split('-');
+                const model = parts[1] || fullModel;
+                
+                const J = parseNumber(row[9]);
+                const E = parseNumber(row[4]);
+                const F = parseNumber(row[5]);
+                const G = parseNumber(row[6]);
+                const stock = J - E - F - G;
+                
+                result.push({ model: model.trim(), color: parts[2] || "", size: String(row[1] || ""), stock });
+            }
+            return result;
+        };
+
+        const parseOrders = (data) => {
+            const result = [];
+            if(data.length < 3) return result;
+            const sizeHeaders = [];
+            const headerRow = data[0].length >= 16 ? data[0] : (data[1] || []);
+            const headerRow2 = data[1] || [];
+            
+            for (let col = 16; col < Math.max(headerRow.length, headerRow2.length); col++) {
+                sizeHeaders[col] = String(headerRow[col] || headerRow2[col] || "").trim();
+            }
+            
+            for (let i = 2; i < data.length; i++) {
+                const row = data[i];
+                if (!row || !row[2]) continue;
+                const fullModel = String(row[2] || "");
+                const parts = fullModel.split('-');
+                const model = parts[1] || fullModel;
+                
+                for (let col = 16; col < row.length; col++) {
+                    const size = sizeHeaders[col];
+                    if (size && row[col]) {
+                        const qty = parseNumber(row[col]);
+                        if (qty > 0) result.push({ model: model.trim(), color: parts[2] || "", size, qty });
+                    }
+                }
+            }
+            return result;
+        };
+
+        // Chart Components
+        const LineChartCanvas = ({ data, selectedModels, colors }) => {
+            const canvasRef = useRef(null);
+            const chartRef = useRef(null);
+
+            useEffect(() => {
+                if (!canvasRef.current) return;
+                if (chartRef.current) chartRef.current.destroy();
+
+                const datasets = selectedModels.map((model, idx) => ({
+                    label: model,
+                    data: data.map(d => d[model] || 0),
+                    borderColor: colors[idx % colors.length],
+                    backgroundColor: colors[idx % colors.length],
+                    tension: 0.3,
+                    borderWidth: 2,
+                    pointRadius: 3
+                }));
+
+                chartRef.current = new window.Chart(canvasRef.current, {
+                    type: 'line',
+                    data: { labels: data.map(d => d.date), datasets },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { position: 'top', labels: { font: { size: 12 } } } },
+                        scales: {
+                            x: { grid: { display: false } },
+                            y: { grid: { borderDash: [3, 3] }, beginAtZero: true }
+                        }
+                    }
+                });
+                return () => chartRef.current && chartRef.current.destroy();
+            }, [data, selectedModels, colors]);
+
+            return <canvas ref={canvasRef}></canvas>;
+        };
+
+        const PieChartCanvas = ({ data, colors }) => {
+            const canvasRef = useRef(null);
+            const chartRef = useRef(null);
+
+            useEffect(() => {
+                if (!canvasRef.current) return;
+                if (chartRef.current) chartRef.current.destroy();
+
+                const keys = Object.keys(data);
+                const values = keys.map(k => data[k].value);
+
+                chartRef.current = new window.Chart(canvasRef.current, {
+                    type: 'pie',
+                    data: {
+                        labels: keys,
+                        datasets: [{ data: values, backgroundColor: colors.slice(0, keys.length) }]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { position: 'right', labels: { font: { size: 12 } } } }
+                    }
+                });
+                return () => chartRef.current && chartRef.current.destroy();
+            }, [data, colors]);
+
+            return <canvas ref={canvasRef}></canvas>;
+        };
+
+        // App Component
+        const App = () => {
+            const [sales, setSales] = useState([]);
+            const [inventory, setInventory] = useState([]);
+            const [orders, setOrders] = useState([]);
+            
+            const [models, setModels] = useState([]);
+            const [selectedModels, setSelectedModels] = useState([]);
+            const [avgDays, setAvgDays] = useState(7);
+            
+            const [orderDate, setOrderDate] = useState(new Date().toISOString().split('T')[0]);
+            
+            useEffect(() => {
+                if (sales.length > 0) {
+                    const uniqueModels = [...new Set(sales.map(s => s.model))].filter(Boolean).sort();
+                    setModels(uniqueModels);
+                    if (selectedModels.length === 0 && uniqueModels.length > 0) {
+                        setSelectedModels([uniqueModels[0]]);
+                    }
+                }
+            }, [sales]);
+
+            const handleFileUpload = (e, type) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const bstr = evt.target.result;
+                    const wb = XLSX.read(bstr, { type: 'binary', raw: false });
+                    const wsname = wb.SheetNames[0];
+                    const ws = wb.Sheets[wsname];
+                    const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false });
+                    
+                    if (type === 'sales') setSales(parseSales(data));
+                    else if (type === 'inventory') setInventory(parseInventory(data));
+                    else if (type === 'orders') setOrders(parseOrders(data));
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            const toggleModel = (m) => setSelectedModels(prev => prev.includes(m) ? prev.filter(x => x !== m) : [...prev, m]);
+
+            const filteredSales = useMemo(() => sales.filter(s => selectedModels.includes(s.model)), [sales, selectedModels]);
+
+            // Trend Helpers
+            const getTrendData = useCallback((filterFn) => {
+                const dataMap = {};
+                filteredSales.filter(filterFn).forEach(s => {
+                    if (!dataMap[s.date]) dataMap[s.date] = { date: s.date };
+                    dataMap[s.date][s.model] = (dataMap[s.date][s.model] || 0) + s.qty;
+                });
+                return Object.values(dataMap).sort((a, b) => a.date.localeCompare(b.date));
+            }, [filteredSales]);
+
+            const dailySalesDataDomestic = useMemo(() => getTrendData(s => isDomestic(s.color)), [getTrendData]);
+            const dailySalesDataTotal = useMemo(() => getTrendData(s => true), [getTrendData]);
+
+            const dateRange = useMemo(() => {
+                const allTrends = getTrendData(s => true);
+                if(allTrends.length === 0) return { start: '-', end: '-' };
+                return { start: allTrends[0].date, end: allTrends[allTrends.length-1].date };
+            }, [getTrendData]);
+
+            // Depletion logic
+            const depletionDataGroups = useMemo(() => {
+                if (sales.length === 0) return [];
+                
+                const maxDateStr = sales.reduce((max, s) => s.date > max ? s.date : max, "1970-01-01");
+
+                const calcDepletion = (modelName, typeName, filterFn) => {
+                    const tSales = sales.filter(s => s.model === modelName && filterFn(s));
+                    const tInv = inventory.filter(i => i.model === modelName && filterFn(i));
+                    const tOrd = orders.filter(o => o.model === modelName && filterFn(o));
+                    
+                    let targetSales = tSales;
+                    let daysToDivide = avgDays === 999 ? 1 : avgDays;
+                    
+                    if (avgDays !== 999 && maxDateStr) {
+                        const cutoff = new Date(maxDateStr);
+                        cutoff.setDate(cutoff.getDate() - avgDays);
+                        const cutoffStr = cutoff.toISOString().split('T')[0];
+                        targetSales = tSales.filter(s => s.date >= cutoffStr);
+                    } else if (avgDays === 999 && tSales.length > 0) {
+                        const minD = tSales.reduce((min, s) => s.date < min ? s.date : min, "9999-12-31");
+                        const minDate = new Date(minD);
+                        const maxD = new Date(maxDateStr);
+                        const diffDays = Math.ceil((maxD - minDate) / (1000 * 60 * 60 * 24));
+                        daysToDivide = Math.max(1, diffDays || 1);
+                    }
+                    
+                    const totalPeriodSales = targetSales.reduce((acc, curr) => acc + curr.qty, 0);
+                    const dailyAvg = totalPeriodSales / daysToDivide;
+
+                    const stock = tInv.reduce((acc, curr) => acc + curr.stock, 0);
+                    const incomingStock = tOrd.reduce((acc, curr) => acc + curr.qty, 0);
+                    
+                    const totalStock = stock + incomingStock;
+                    const daysRemaining = dailyAvg > 0 ? Math.floor(totalStock / dailyAvg) : 999;
+                    
+                    let depletionDate = '-';
+                    if (daysRemaining !== 999) {
+                        const d = new Date();
+                        d.setDate(d.getDate() + daysRemaining);
+                        depletionDate = d.toISOString().split('T')[0];
+                    }
+
+                    return { type: typeName, dailyAvg, stock, incomingStock, totalStock, daysRemaining, depletionDate };
+                };
+
+                return selectedModels.map(model => ({
+                    model,
+                    domestic: calcDepletion(model, '국내 재고 (ZZ)', s => isDomestic(s.color)),
+                    total: calcDepletion(model, '총합 (전체)', s => true)
+                }));
+            }, [selectedModels, sales, inventory, orders, avgDays]);
+
+            const downloadSample = () => {
+                const wb = XLSX.utils.book_new();
+                const salesWs = XLSX.utils.aoa_to_sheet([
+                    ["몰주문일", "매출처", "주문상태", "모델명", "사이즈", "수량", "판매가"],
+                    ["2023-10-01", "A몰", "결제완료", "Nike-AirMax-ZZBLK", "260", 5, 100000],
+                    ["2023-10-02", "B몰", "결제완료", "Nike-AirMax-ZZBLK", "270", 2, 100000],
+                    ["2023-10-02", "A몰", "결제완료", "Adidas-Ultra-WHT", "240", 3, 150000],
+                    ["2023-10-03", "A몰", "결제완료", "Nike-AirMax-ZZBLK", "260", 6, 100000],
+                    ["2023-10-03", "A몰", "결제완료", "Nike-AirMax-RED", "260", 4, 100000]
+                ]);
+                XLSX.utils.book_append_sheet(wb, salesWs, "판매데이터");
+
+                const invWs = XLSX.utils.aoa_to_sheet([
+                    ["모델명", "단품명", "매핑키", "D", "선주문", "쿠팡", "아마존", "H", "I", "가용재고"],
+                    ["Nike-AirMax-ZZBLK", "260", "Nike-AirMax-ZZBLK_260", "", 10, 5, 0, "", "", 100],
+                    ["Nike-AirMax-ZZBLK", "270", "Nike-AirMax-ZZBLK_270", "", 0, 0, 0, "", "", 50],
+                    ["Nike-AirMax-RED", "260", "Nike-AirMax-RED_260", "", 0, 0, 0, "", "", 20],
+                    ["Adidas-Ultra-WHT", "240", "Adidas-Ultra-WHT_240", "", 5, 5, 5, "", "", 80]
+                ]);
+                XLSX.utils.book_append_sheet(wb, invWs, "현재재고");
+
+                const ordWs = XLSX.utils.aoa_to_sheet([
+                    ["발주서", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "사이즈"],
+                    ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "240", "260", "270"],
+                    ["", "", "Nike-AirMax-ZZBLK", "", "", "", "", "", "", "", "", "", "", "", "", "", 0, 50, 20],
+                    ["", "", "Adidas-Ultra-WHT", "", "", "", "", "", "", "", "", "", "", "", "", "", 30, 0, 0]
+                ]);
+                XLSX.utils.book_append_sheet(wb, ordWs, "발주내역");
+
+                XLSX.writeFile(wb, "Sample_Data.xlsx");
+            };
+
+            return (
+                <div className="max-w-7xl mx-auto p-4 md:p-8 space-y-6">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                        <div>
+                            <h1 className="text-2xl font-bold text-slate-800 tracking-tight">대시보드</h1>
+                            <p className="text-slate-500 text-sm mt-1">통합 매출 및 재고 소진 예측 시스템</p>
+                        </div>
+                        <button onClick={downloadSample} className="flex items-center px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition-colors">
+                            <Icons.Download /> 샘플 엑셀 다운로드
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="glass p-5 rounded-2xl">
+                            <label className="block text-sm font-semibold mb-2 flex items-center gap-2"><Icons.Upload /> 판매 데이터 (필수)</label>
+                            <input type="file" accept=".csv, .xlsx" onChange={e => handleFileUpload(e, 'sales')} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 transition-all"/>
+                            <div className="text-xs text-slate-400 mt-2">A~G열 양식</div>
+                        </div>
+                        <div className="glass p-5 rounded-2xl">
+                            <label className="block text-sm font-semibold mb-2 flex items-center gap-2"><Icons.Upload /> 재고 데이터 (필수)</label>
+                            <input type="file" accept=".csv, .xlsx" onChange={e => handleFileUpload(e, 'inventory')} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 transition-all"/>
+                            <div className="text-xs text-slate-400 mt-2">수식: J - E - F - G</div>
+                        </div>
+                        <div className="glass p-5 rounded-2xl">
+                            <label className="block text-sm font-semibold mb-2 flex items-center gap-2"><Icons.Upload /> 발주 내역 (선택)</label>
+                            <input type="file" accept=".csv, .xlsx" onChange={e => handleFileUpload(e, 'orders')} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 transition-all"/>
+                            <div className="text-xs text-slate-400 mt-2">3행부터 파싱 (Q열=사이즈)</div>
+                        </div>
+                    </div>
+
+                    {sales.length > 0 && (
+                        <div className="space-y-6 animate-fade-in-up">
+                            <div className="glass p-6 rounded-2xl flex flex-col md:flex-row gap-6 justify-between">
+                                <div>
+                                    <h3 className="text-sm font-bold text-slate-800 mb-3 flex items-center"><Icons.Calendar /> 분석 기간</h3>
+                                    <div className="text-xl font-black text-brand-600 tracking-tight">{dateRange.start} <br/><span className="text-slate-300">~</span> {dateRange.end}</div>
+                                </div>
+                                <div className="flex-1">
+                                    <h3 className="text-sm font-bold text-slate-800 mb-3">모델명 선택 (비교 분석)</h3>
+                                    <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-1">
+                                        {models.map(m => (
+                                            <button key={m} onClick={() => toggleModel(m)}
+                                                className={`px-3 py-1.5 text-sm font-medium rounded-full transition-all border ${selectedModels.includes(m) ? 'bg-brand-600 text-white border-brand-600 shadow-md' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+                                                {m}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="w-48">
+                                    <h3 className="text-sm font-bold text-slate-800 mb-3">일평균 판매량 기준</h3>
+                                    <select value={avgDays} onChange={e => setAvgDays(Number(e.target.value))} className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-white font-medium shadow-sm outline-none focus:border-brand-500">
+                                        <option value={7}>최근 7일 평균</option>
+                                        <option value={30}>최근 30일 평균</option>
+                                        <option value={999}>전체 기간 평균</option>
+                                    </select>
+                                    <h3 className="text-sm font-bold text-slate-800 mb-2 mt-4">입고 예정일</h3>
+                                    <input type="date" value={orderDate} onChange={e => setOrderDate(e.target.value)} className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-white font-medium shadow-sm outline-none focus:border-brand-500"/>
+                                </div>
+                            </div>
+
+                            {selectedModels.length > 0 && (
+                                <div className="space-y-8">
+                                    {depletionDataGroups.map((group) => (
+                                        <div key={group.model} className="space-y-4">
+                                            <h2 className="text-xl font-extrabold text-slate-800 border-l-4 border-brand-500 pl-3">{group.model} 분석</h2>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                {[group.domestic, group.total].map((card, idx) => (
+                                                    <div key={card.type} className={`glass p-6 rounded-2xl relative overflow-hidden group border ${idx === 0 ? 'border-brand-200 shadow-sm' : 'border-slate-200 opacity-90'}`}>
+                                                        <div className={`absolute top-0 left-0 w-full h-1 ${idx === 0 ? 'bg-brand-500' : 'bg-slate-500'}`}></div>
+                                                        <h3 className="text-lg font-bold text-slate-800 mb-1">{card.type}</h3>
+                                                        
+                                                        {card.daysRemaining <= 14 && (
+                                                            <div className="absolute top-5 right-4 flex items-center text-warning-600 text-xs font-bold bg-warning-50 px-2 py-1 rounded-md">
+                                                                <Icons.AlertTriangle /> 품절 임박
+                                                            </div>
+                                                        )}
+                                                        {card.daysRemaining > 90 && card.daysRemaining !== 999 && (
+                                                            <div className="absolute top-5 right-4 flex items-center text-danger-600 text-xs font-bold bg-danger-50 px-2 py-1 rounded-md">
+                                                                <Icons.AlertCircle /> 과재고
+                                                            </div>
+                                                        )}
+
+                                                        <div className="mt-6 flex justify-between items-end border-b border-slate-100 pb-4">
+                                                            <div>
+                                                                <div className="text-xs font-semibold text-slate-400">예상 소진일</div>
+                                                                <div className="text-2xl font-black text-slate-800 mt-1">{card.depletionDate}</div>
+                                                            </div>
+                                                            <div className="text-right">
+                                                                <div className="text-xs font-semibold text-slate-400">버틸 수 있는 일자</div>
+                                                                <div className="text-xl font-bold text-brand-600 mt-1">{card.daysRemaining === 999 ? '∞' : `${card.daysRemaining}일`}</div>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                                                            <div className="bg-slate-50 p-2 rounded-lg">
+                                                                <div className="text-[10px] font-bold text-slate-400 mb-1">일평균 판매</div>
+                                                                <div className="text-sm font-bold text-slate-700">{card.dailyAvg.toFixed(1)}개</div>
+                                                            </div>
+                                                            <div className="bg-slate-50 p-2 rounded-lg">
+                                                                <div className="text-[10px] font-bold text-slate-400 mb-1">현재 재고</div>
+                                                                <div className="text-sm font-bold text-slate-700">{card.stock}개</div>
+                                                            </div>
+                                                            <div className="bg-slate-50 p-2 rounded-lg">
+                                                                <div className="text-[10px] font-bold text-brand-400 mb-1">입고 예정</div>
+                                                                <div className="text-sm font-bold text-brand-700">+{card.incomingStock}개</div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {selectedModels.length > 0 && (
+                                <div className="space-y-6">
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                        <div className="glass p-6 rounded-2xl">
+                                            <h3 className="text-base font-bold text-slate-800 mb-6 flex items-center"><Icons.TrendingUp /> 국내 판매 트렌드 (ZZ)</h3>
+                                            <div className="h-72 w-full relative">
+                                                <LineChartCanvas data={dailySalesDataDomestic} selectedModels={selectedModels} colors={COLORS} />
+                                            </div>
+                                        </div>
+                                        <div className="glass p-6 rounded-2xl">
+                                            <h3 className="text-base font-bold text-slate-800 mb-6 flex items-center"><Icons.TrendingUp /> 전체 판매 트렌드 (총합)</h3>
+                                            <div className="h-72 w-full relative">
+                                                <LineChartCanvas data={dailySalesDataTotal} selectedModels={selectedModels} colors={COLORS} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                        <div className="glass p-6 rounded-2xl">
+                                            <h3 className="text-base font-bold text-slate-800 mb-6">컬러별 판매 비중 (합산)</h3>
+                                            <div className="h-72 w-full relative">
+                                                <PieChartCanvas 
+                                                    data={filteredSales.reduce((acc, curr) => {
+                                                        const c = curr.color || 'Unknown';
+                                                        acc[c] = acc[c] || { name: c, value: 0 };
+                                                        acc[c].value += curr.qty;
+                                                        return acc;
+                                                    }, {})} 
+                                                    colors={COLORS} 
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="glass p-6 rounded-2xl">
+                                            <h3 className="text-base font-bold text-slate-800 mb-6">사이즈별 판매 비중 (합산)</h3>
+                                            <div className="h-72 w-full relative">
+                                                <PieChartCanvas 
+                                                    data={filteredSales.reduce((acc, curr) => {
+                                                        const s = curr.size || 'Unknown';
+                                                        acc[s] = acc[s] || { name: s, value: 0 };
+                                                        acc[s].value += curr.qty;
+                                                        return acc;
+                                                    }, {})} 
+                                                    colors={COLORS} 
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
